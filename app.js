@@ -500,8 +500,13 @@ function downloadFile(content, filename, mimeType) {
   const blob = new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url; a.download = filename; a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  // Revoke after a safe delay — long enough for any browser/device to initiate the download
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
 }
 
 function getActiveConversation() { return STATE.conversations.find(c => c.id === STATE.activeConvId) || null; }
@@ -627,7 +632,9 @@ function newChat() {
   STATE.activeConvId = null;
   STATE.attachments = [];
   STATE.artifacts = [];
-  document.getElementById('user-input').value = '';
+  const inputEl = document.getElementById('user-input');
+  inputEl.value = '';
+  delete inputEl.dataset.replaceIndex; // clear any stale edit state
   document.getElementById('system-prompt-input').value = STATE.settings.defaultSystemPrompt || '';
   UI.renderMessages([]);
   UI.showEmptyState(true);
@@ -635,7 +642,7 @@ function newChat() {
   UI.closeArtifactPanel();
   UI.updateTokenBudget();
   renderConvList();
-  document.getElementById('user-input').focus();
+  inputEl.focus();
 }
 
 function renderConvList() {
@@ -713,6 +720,9 @@ function forkConversation(upToMsgIndex) {
     messages: upToMsgIndex !== undefined ? conv.messages.slice(0, upToMsgIndex + 1) : [...conv.messages],
     createdAt: Date.now(),
     updatedAt: Date.now(),
+    // Deep-copy all nested objects so fork and original don't share references
+    totalTokens: { input: conv.totalTokens?.input ?? 0, output: conv.totalTokens?.output ?? 0 },
+    systemPrompt: conv.systemPrompt || '',
   };
   STATE.conversations.unshift(forked);
   STORE.saveConversations();
@@ -846,8 +856,12 @@ async function sendMessage(opts = {}) {
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
-      const results = providerObj.parseStreamChunk(buffer);
-      buffer = '';
+      // Split on newlines but keep the last potentially-incomplete line in buffer
+      const lastNewline = buffer.lastIndexOf('\n');
+      if (lastNewline === -1) continue; // no complete line yet
+      const chunk = buffer.slice(0, lastNewline + 1);
+      buffer = buffer.slice(lastNewline + 1);
+      const results = providerObj.parseStreamChunk(chunk);
       for (const r of results) {
         if (r.usage) { inputTokens = r.usage.input_tokens || inputTokens; outputTokens = r.usage.output_tokens || outputTokens; }
         if (r.type === 'thinking') { fullThinking += r.delta; asstMsg.thinking = fullThinking; }
@@ -909,19 +923,28 @@ function stopStreaming() {
 function regenerate() {
   const conv = getActiveConversation();
   if (!conv || conv.messages.length < 2) return;
-  // Remove last assistant message
+
+  // Find last assistant message index
   const lastAsstRevIdx = [...conv.messages].reverse().findIndex(m => m.role === 'assistant');
   if (lastAsstRevIdx === -1) return;
   const asstIdx = conv.messages.length - 1 - lastAsstRevIdx;
-  conv.messages.splice(asstIdx, 1);
-  // Also remove the last user message so sendMessage re-creates it cleanly
+
+  // Find last user message index — check BEFORE modifying anything
   const lastUserRevIdx = [...conv.messages].reverse().findIndex(m => m.role === 'user');
-  if (lastUserRevIdx === -1) { STORE.saveConversations(); return; }
+  if (lastUserRevIdx === -1) return; // no user message to regenerate from
   const userIdx = conv.messages.length - 1 - lastUserRevIdx;
+
+  // Capture user message content before splicing
   const lastUserMsg = conv.messages[userIdx];
   const text = getTextContent(lastUserMsg);
   const attachments = lastUserMsg.content.filter(c => c.type !== 'text');
-  conv.messages.splice(userIdx, 1);
+
+  // Now safely remove both messages (remove higher index first to preserve lower index)
+  const higherIdx = Math.max(asstIdx, userIdx);
+  const lowerIdx = Math.min(asstIdx, userIdx);
+  conv.messages.splice(higherIdx, 1);
+  conv.messages.splice(lowerIdx, 1);
+
   STORE.saveConversations();
   sendMessage({ text, attachments });
 }
@@ -970,13 +993,32 @@ async function autoExtractMemory() {
   const transcript = conv.messages.filter(m => m.role !== 'system').map(m => `${m.role.toUpperCase()}: ${getTextContent(m)}`).join('\n').slice(0, 6000);
   const extractPrompt = `From this conversation, extract brief key facts, preferences, and important info about the user that should be remembered for future conversations. Be concise. Bullet points only.\n\n${transcript}`;
   try {
-    const body = PROVIDERS[provider].buildRequest([{ id: uid(), role: 'user', content: [{ type: 'text', text: extractPrompt }], provider, timestamp: Date.now(), tokens: {}, artifacts: [] }], { max_tokens: 400, temperature: 0.3 }, null);
-    const resp = await fetch(provider === 'gemini' ? PROVIDERS.gemini.getURL(key, conv.model) : PROVIDERS[provider].baseURL, {
-      method: 'POST', headers: PROVIDERS[provider].getHeaders(key), body: JSON.stringify({ ...body, stream: false }),
+    const builtBody = PROVIDERS[provider].buildRequest(
+      [{ id: uid(), role: 'user', content: [{ type: 'text', text: extractPrompt }], provider, timestamp: Date.now(), tokens: {}, artifacts: [] }],
+      { max_tokens: 400, temperature: 0.3 }, null
+    );
+
+    let fetchURL, fetchBody;
+    if (provider === 'gemini') {
+      // Use non-streaming generateContent endpoint
+      fetchURL = `${PROVIDERS.gemini.baseURL}/${conv.model}:generateContent?key=${key}`;
+      fetchBody = builtBody; // no stream param needed
+    } else {
+      fetchURL = PROVIDERS[provider].baseURL;
+      fetchBody = { ...builtBody, stream: false };
+    }
+
+    const resp = await fetch(fetchURL, {
+      method: 'POST',
+      headers: PROVIDERS[provider].getHeaders(key),
+      body: JSON.stringify(fetchBody),
     });
     if (!resp.ok) throw new Error('API error ' + resp.status);
     const data = await resp.json();
     let extracted = '';
+    if (provider === 'anthropic') extracted = data.content?.[0]?.text || '';
+    else if (provider === 'gemini') extracted = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    else extracted = data.choices?.[0]?.message?.content || '';
     if (provider === 'anthropic') extracted = data.content?.[0]?.text || '';
     else if (provider === 'gemini') extracted = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
     else extracted = data.choices?.[0]?.message?.content || '';
@@ -1013,11 +1055,16 @@ async function runCompareMode() {
     const key = apiKeys[prov];
     const fakeMsg = [{ id: uid(), role: 'user', content: [{ type: 'text', text: msg }], timestamp: Date.now(), tokens: {}, artifacts: [] }];
     try {
-      const tmpSettings = { currentModel: model };
+      // Build request without mutating global STATE — swap and restore atomically
       const savedModel = STATE.settings.currentModel;
       STATE.settings.currentModel = model;
-      const body = PROVIDERS[prov].buildRequest(fakeMsg, STATE.params, null);
-      STATE.settings.currentModel = savedModel;
+      let body;
+      try {
+        body = PROVIDERS[prov].buildRequest(fakeMsg, STATE.params, null);
+      } finally {
+        // Always restore, even if buildRequest throws
+        STATE.settings.currentModel = savedModel;
+      }
       let url = PROVIDERS[prov].baseURL;
       if (prov === 'gemini') url = PROVIDERS.gemini.getURL(key, model);
       const resp = await fetch(url, { method: 'POST', headers: PROVIDERS[prov].getHeaders(key), body: JSON.stringify(body) });
@@ -1090,7 +1137,10 @@ function showCostEstimator() {
 function renderMarkdown(text) {
   if (!text) return '';
   try {
-    const raw = marked.parse(text, { breaks: true, gfm: true });
+    const dirty = marked.parse(text, { breaks: true, gfm: true });
+    const raw = (typeof DOMPurify !== 'undefined')
+      ? DOMPurify.sanitize(dirty, { ADD_TAGS: ['iframe'], ADD_ATTR: ['target'] })
+      : dirty;
     // Enhance code blocks with header and copy/artifact buttons
     const div = document.createElement('div');
     div.innerHTML = raw;
@@ -1148,7 +1198,7 @@ function renderJsonTree(obj, depth = 0) {
 
 // ==================== UI ====================
 const UI = {
-  renderMessages(messages) {
+  rrenderMessages(messages) {
     const list = document.getElementById('messages-list');
     list.innerHTML = '';
     for (let i = 0; i < messages.length; i++) {
@@ -1157,6 +1207,27 @@ const UI = {
       list.appendChild(el);
     }
     lucide.createIcons({ nodes: [list] });
+
+    // Delegate action button clicks via data attributes (avoids inline JS + large string issues)
+    list.addEventListener('click', e => {
+      const btn = e.target.closest('[data-action]');
+      if (!btn) return;
+      const action = btn.dataset.action;
+      const conv = getActiveConversation();
+      if (action === 'edit') {
+        UI.editMessage(parseInt(btn.dataset.idx, 10));
+      } else if (action === 'copy') {
+        const m = conv?.messages.find(x => x.id === btn.dataset.msgId);
+        if (m) copyText(getTextContent(m));
+      } else if (action === 'fork') {
+        forkConversation(parseInt(btn.dataset.idx, 10));
+      } else if (action === 'regenerate') {
+        regenerate();
+      } else if (action === 'open-artifacts') {
+        const m = conv?.messages.find(x => x.id === btn.dataset.msgId);
+        if (m?.artifacts?.length) UI.openArtifactPanel(m.artifacts);
+      }
+    }, { once: false });
   },
 
   createMessageElement(msg, idx, allMsgs) {
@@ -1219,11 +1290,19 @@ const UI = {
 
     // Actions
     let actionsHTML = '';
+    // Store message ID on element; event listeners use data lookups instead of inline JS
+    const msgId = msg.id;
     if (msg.role === 'user') {
       actionsHTML = `<div class="message-actions">
-        <button class="msg-action-btn" onclick="UI.editMessage(${idx})"><i data-lucide="edit-2"></i> Edit</button>
-        <button class="msg-action-btn" onclick="copyText(${JSON.stringify(getTextContent(msg))})"><i data-lucide="copy"></i> Copy</button>
-        <button class="msg-action-btn" onclick="forkConversation(${idx})"><i data-lucide="git-fork"></i> Fork</button>
+        <button class="msg-action-btn" data-action="edit" data-idx="${idx}"><i data-lucide="edit-2"></i> Edit</button>
+        <button class="msg-action-btn" data-action="copy" data-msg-id="${escapeHtml(msgId)}"><i data-lucide="copy"></i> Copy</button>
+        <button class="msg-action-btn" data-action="fork" data-idx="${idx}"><i data-lucide="git-fork"></i> Fork</button>
+      </div>`;
+    } else {
+      actionsHTML = `<div class="message-actions">
+        <button class="msg-action-btn" data-action="copy" data-msg-id="${escapeHtml(msgId)}"><i data-lucide="copy"></i> Copy</button>
+        ${isLastAsst ? `<button class="msg-action-btn" data-action="regenerate"><i data-lucide="refresh-cw"></i> Regenerate</button>` : ''}
+        ${msg.artifacts?.length ? `<button class="msg-action-btn" data-action="open-artifacts" data-msg-id="${escapeHtml(msgId)}"><i data-lucide="panel-right"></i> Artifacts</button>` : ''}
       </div>`;
     } else {
       actionsHTML = `<div class="message-actions">
@@ -1283,9 +1362,27 @@ const UI = {
     autoResize(inputEl);
     inputEl.focus();
     // On next send, replace from this index
-    inputEl.dataset.replaceIndex = idx;
-    toast('Editing message. Send to replace from this point.', 'info');
-  },
+    inputEl.dataset.replaceIndex = String(idx);
+
+    // Add a visible cancel-edit button if not already present
+    let cancelBtn = document.getElementById('cancel-edit-btn');
+    if (!cancelBtn) {
+      cancelBtn = document.createElement('button');
+      cancelBtn.id = 'cancel-edit-btn';
+      cancelBtn.className = 'btn-sm';
+      cancelBtn.style.cssText = 'position:absolute;top:-32px;right:0;background:var(--bg-tertiary);border-color:var(--warning);color:var(--warning);font-size:11px;z-index:10;';
+      cancelBtn.textContent = '✕ Cancel edit';
+      cancelBtn.addEventListener('click', () => {
+        delete inputEl.dataset.replaceIndex;
+        inputEl.value = '';
+        autoResize(inputEl);
+        cancelBtn.remove();
+      });
+      document.getElementById('textarea-wrapper').style.position = 'relative';
+      document.getElementById('textarea-wrapper').appendChild(cancelBtn);
+    }
+    toast('Editing message — send to replace from this point.', 'info');
+  },,
 
   showEmptyState(show) {
     document.getElementById('empty-state').style.display = show ? 'flex' : 'none';
@@ -1599,16 +1696,38 @@ async function testApiKey(providerId) {
   toast(`Testing ${PROVIDERS[providerId].name} key…`, 'info');
   try {
     const p = PROVIDERS[providerId];
-    let url = p.baseURL;
-    const testMsg = [{ id: uid(), role: 'user', content: [{ type:'text', text:'Hi' }], timestamp: Date.now(), tokens:{}, artifacts:[] }];
+    const testMsg = [{ id: uid(), role: 'user', content: [{ type: 'text', text: 'Hi' }], timestamp: Date.now(), tokens: {}, artifacts: [] }];
     const savedModel = STATE.settings.currentModel;
     STATE.settings.currentModel = p.models[0]?.id;
-    const body = { ...p.buildRequest(testMsg, { max_tokens: 8, temperature: 0 }, null), stream: false };
+    const builtBody = p.buildRequest(testMsg, { max_tokens: 8, temperature: 0 }, null);
     STATE.settings.currentModel = savedModel;
-    if (providerId === 'gemini') url = p.getURL(key, p.models[0]?.id);
-    const resp = await fetch(url, { method: 'POST', headers: p.getHeaders(key), body: JSON.stringify(body) });
-    if (resp.ok) toast(`${p.name} key works! ✓`, 'success');
-    else { const e = await resp.json(); toast(`${p.name}: ${e.error?.message || 'Error ' + resp.status}`, 'error', 5000); }
+
+    let url, headers, body;
+
+    if (providerId === 'gemini') {
+      // Gemini non-streaming uses generateContent (no alt=sse)
+      url = `${p.baseURL}/${p.models[0]?.id}:generateContent?key=${key}`;
+      headers = p.getHeaders(key);
+      // Remove stream-specific config if present
+      const { ...geminiBody } = builtBody;
+      body = geminiBody;
+    } else {
+      url = p.baseURL;
+      headers = p.getHeaders(key);
+      body = { ...builtBody, stream: false };
+    }
+
+    const resp = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+    if (resp.ok) {
+      toast(`${p.name} key works! ✓`, 'success');
+    } else {
+      try {
+        const e = await resp.json();
+        toast(`${p.name}: ${e.error?.message || 'Error ' + resp.status}`, 'error', 5000);
+      } catch {
+        toast(`${p.name}: Error ${resp.status}`, 'error', 5000);
+      }
+    }
   } catch (e) { toast(`Test failed: ${e.message}`, 'error'); }
 }
 
@@ -1711,9 +1830,9 @@ function renderSPLibrary() {
 
 // ==================== IN-CONVERSATION SEARCH ====================
 function convSearch(query) {
-  // Clear highlights
+  // Clear highlights — use replaceWith(textNode) to avoid HTML entity corruption
   document.querySelectorAll('.search-highlight').forEach(el => {
-    el.outerHTML = el.textContent;
+    el.replaceWith(document.createTextNode(el.textContent));
   });
   STATE.convSearchMatches = [];
   STATE.convSearchIndex = 0;
@@ -1863,11 +1982,15 @@ function openCompareMode() {
   sides.forEach((side, si) => {
     const pSel = document.getElementById(`compare-${side}-provider`);
     const mSel = document.getElementById(`compare-${side}-model`);
-    pSel.innerHTML = providerKeys.map(id => `<option value="${id}"${id === (si === 0 ? 'anthropic' : 'openai') ? ' selected':''} >${PROVIDERS[id].name}</option>`).join('');
+    pSel.innerHTML = providerKeys.map(id => `<option value="${id}"${id === (si === 0 ? 'anthropic' : 'openai') ? ' selected' : ''}>${PROVIDERS[id].name}</option>`).join('');
     const defProv = si === 0 ? 'anthropic' : 'openai';
     mSel.innerHTML = PROVIDERS[defProv].models.map(m => `<option value="${m.id}">${m.label}</option>`).join('');
-    pSel.addEventListener('change', () => {
-      mSel.innerHTML = PROVIDERS[pSel.value].models.map(m => `<option value="${m.id}">${m.label}</option>`).join('');
+
+    // Clone the select to wipe all previously attached listeners before adding a fresh one
+    const freshPSel = pSel.cloneNode(true);
+    pSel.parentNode.replaceChild(freshPSel, pSel);
+    freshPSel.addEventListener('change', () => {
+      mSel.innerHTML = PROVIDERS[freshPSel.value].models.map(m => `<option value="${m.id}">${m.label}</option>`).join('');
     });
   });
 }
@@ -2031,7 +2154,7 @@ function exportAllConversations() {
 async function exportEncryptedSettings() {
   const pw = document.getElementById('export-password').value;
   if (!pw) { toast('Enter an encryption password.', 'warning'); return; }
-  const data = JSON.stringify({ settings: STATE.settings, apiKeys: STORE.loadApiKeys(), spLibrary: STATE.spLibrary, templates: STATE.templates });
+  const data = JSON.stringify({ settings: STATE.settings, apiKeys: STORE.loadApiKeys(), spLibrary: STATE.spLibrary, templates: STATE.templates, params: STATE.params });
   try {
     const encrypted = await encryptData(data, pw);
     downloadFile(encrypted, `nexusai-settings-${Date.now()}.json`, 'application/json');
@@ -2067,7 +2190,12 @@ async function importEncryptedSettings(file) {
       if (data.apiKeys) STORE.saveApiKeys(data.apiKeys);
       if (data.spLibrary) { STATE.spLibrary = data.spLibrary; STORE.saveSPLibrary(); }
       if (data.templates) { STATE.templates = data.templates; STORE.saveTemplates(); }
+      if (data.params) { STATE.params = { ...STATE.params, ...data.params }; STORE.saveParams(); }
       applySettings();
+      // Re-sync all UI that depends on freshly imported state
+      buildParamsGrid();
+      populateSettingsUI();
+      renderTemplatesList();
       toast('Settings imported successfully!', 'success');
       document.getElementById('settings-overlay').classList.add('hidden');
     } catch (e) { toast('Decryption failed — wrong password?', 'error'); }
@@ -2266,9 +2394,12 @@ function init() {
   });
 
   function doSend() {
-    const replaceIndex = inputEl.dataset.replaceIndex !== undefined ? parseInt(inputEl.dataset.replaceIndex) : undefined;
+    const rawIdx = inputEl.dataset.replaceIndex;
+    const replaceIndex = rawIdx !== undefined ? parseInt(rawIdx, 10) : undefined;
     delete inputEl.dataset.replaceIndex;
-    sendMessage({ replaceIndex: isNaN(replaceIndex) ? undefined : replaceIndex, attachments: [...STATE.attachments] });
+    // Remove cancel-edit button if present
+    document.getElementById('cancel-edit-btn')?.remove();
+    sendMessage({ replaceIndex: (replaceIndex !== undefined && !isNaN(replaceIndex)) ? replaceIndex : undefined, attachments: [...STATE.attachments] });
   }
 
   document.getElementById('send-btn').addEventListener('click', doSend);
