@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-accent="cyan" data-chat-style="bubbles" data-font-size="medium">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="NexusAI — Universal AI Frontend. Chat with any AI provider using your own API keys.">
+  <title>NexusAI — Universal AI Chat</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⬡</text></svg>">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" id="hljs-theme-link">
+  <link rel="stylesheet" href="style.css">
+  <style id="custom-user-css"></style>
+</head>
+<body>
+
+<!-- ==================== MAIN APP ==================== -->
+<div id="app">
+
+  <!-- SIDEBAR -->
+  <aside id="sidebar">
+    <div class="sidebar-header">
+      <div class="logo">
+        <span class="logo-hex">⬡</span>
+        <span class="logo-name">NexusAI</span>
+      </div>
+      <button class="btn-icon" id="new-chat-btn" title="New Chat (Ctrl+K)">
+        <i data-lucide="plus"></i>
+      </button>
+    </div>
+    <div class="sidebar-search">
+      <i data-lucide="search" class="search-icon"></i>
+      <input type="text" id="conv-search" placeholder="Search conversations…" autocomplete="off">
+    </div>
+    <div id="conv-list"></div>
+    <div class="sidebar-footer">
+      <button class="sidebar-footer-btn" id="memory-btn" title="Memory (Ctrl+M)">
+        <i data-lucide="brain"></i> Memory
+      </button>
+      <button class="sidebar-footer-btn" id="settings-btn" title="Settings (Ctrl+/)">
+        <i data-lucide="settings"></i> Settings
+      </button>
+    </div>
+  </aside>
+
+  <!-- MAIN CONTENT -->
+  <main id="main">
+
+    <!-- CHAT HEADER -->
+    <header id="chat-header">
+      <button class="btn-icon" id="sidebar-toggle" title="Toggle Sidebar">
+        <i data-lucide="panel-left"></i>
+      </button>
+      <div id="provider-model-selector">
+        <select id="provider-select" title="Select Provider"></select>
+        <select id="model-select" title="Select Model"></select>
+        <span id="model-meta-badge"></span>
+      </div>
+      <div class="header-actions">
+        <button class="btn-icon" id="sp-toggle-btn" title="System Prompt"><i data-lucide="terminal"></i></button>
+        <button class="btn-icon" id="compare-mode-btn" title="Compare Mode"><i data-lucide="columns-2"></i></button>
+        <button class="btn-icon" id="branch-vis-btn" title="Branch Visualizer"><i data-lucide="git-branch"></i></button>
+        <button class="btn-icon" id="conv-search-toggle-btn" title="Search in Conversation"><i data-lucide="search"></i></button>
+        <button class="btn-icon" id="export-conv-btn" title="Export Conversation"><i data-lucide="download"></i></button>
+        <button class="btn-icon" id="fork-conv-btn" title="Fork Conversation"><i data-lucide="git-fork"></i></button>
+        <button class="btn-icon" id="share-conv-btn" title="Share as HTML"><i data-lucide="share-2"></i></button>
+        <button class="btn-icon" id="shortcuts-btn" title="Keyboard Shortcuts (?)"><i data-lucide="keyboard"></i></button>
+      </div>
+    </header>
+
+    <!-- SYSTEM PROMPT BAR -->
+    <div id="system-prompt-bar">
+      <div class="sp-header">
+        <div class="sp-title"><i data-lucide="terminal"></i> System Prompt</div>
+        <div class="sp-actions">
+          <button class="btn-sm" id="sp-library-btn"><i data-lucide="library"></i> Library</button>
+          <button class="btn-sm" id="sp-save-default-btn">Set Default</button>
+        </div>
+      </div>
+      <textarea id="system-prompt-input" placeholder="Enter system prompt… Variables: {{date}}, {{time}}, {{user_name}}"></textarea>
+    </div>
+
+    <!-- IN-CONVERSATION SEARCH -->
+    <div id="conv-search-bar" class="hidden">
+      <i data-lucide="search"></i>
+      <input type="text" id="conv-search-input" placeholder="Search in conversation…" autocomplete="off">
+      <span id="conv-search-count">0/0</span>
+      <button class="btn-sm" id="conv-search-prev"><i data-lucide="chevron-up"></i></button>
+      <button class="btn-sm" id="conv-search-next"><i data-lucide="chevron-down"></i></button>
+      <button class="btn-icon" id="conv-search-close"><i data-lucide="x"></i></button>
+    </div>
+
+    <!-- TOKEN BUDGET BAR -->
+    <div id="token-budget-bar">
+      <div id="token-budget-track"><div id="token-budget-fill"></div></div>
+      <span id="token-budget-label">0 / — tokens</span>
+    </div>
+
+    <!-- MESSAGES AREA -->
+    <div id="messages-container">
+      <div id="messages-list"></div>
+      <div id="empty-state">
+        <div class="empty-hex">⬡</div>
+        <h2>Start a conversation</h2>
+        <p>Select a provider, enter your API key in <strong>Settings</strong>, then type your first message.</p>
+        <div class="empty-tips">
+          <span>⌨ Type <code>/</code> for templates</span>
+          <span>📎 Drag files to attach</span>
+          <span>🖼 Paste images</span>
+          <span>🔗 Fetch URLs</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- INPUT AREA -->
+    <div id="input-area">
+      <div id="attachments-preview" class="hidden"></div>
+      <div id="url-fetch-bar" class="hidden">
+        <i data-lucide="link"></i>
+        <input type="text" id="url-fetch-input" placeholder="Paste URL to fetch as context…">
+        <button class="btn-sm btn-primary" id="url-fetch-btn">Fetch</button>
+        <button class="btn-icon" id="url-fetch-close"><i data-lucide="x"></i></button>
+      </div>
+      <div class="input-main-row">
+        <div id="textarea-wrapper">
+          <textarea id="user-input" placeholder="Message NexusAI…" rows="1"></textarea>
+          <div id="slash-dropdown" class="hidden"></div>
+        </div>
+        <div class="send-area">
+          <div class="input-tool-btns">
+            <button class="btn-icon" id="attach-image-btn" title="Attach Image"><i data-lucide="image"></i></button>
+            <button class="btn-icon" id="attach-file-btn" title="Attach File"><i data-lucide="paperclip"></i></button>
+            <button class="btn-icon" id="url-fetch-toggle-btn" title="Fetch URL"><i data-lucide="link"></i></button>
+            <button class="btn-icon" id="voice-btn" title="Voice Input"><i data-lucide="mic"></i></button>
+            <button class="btn-icon" id="params-btn" title="Generation Parameters"><i data-lucide="sliders-horizontal"></i></button>
+            <button class="btn-icon" id="cost-estimate-btn" title="Estimate Cost"><i data-lucide="dollar-sign"></i></button>
+          </div>
+          <button id="send-btn"><i data-lucide="send"></i> Send</button>
+          <button id="stop-btn" class="hidden"><i data-lucide="square"></i> Stop</button>
+        </div>
+      </div>
+      <div class="input-footer">
+        <span id="char-token-count">0 chars / ~0 tokens</span>
+        <span id="send-mode-hint">Enter to send · Shift+Enter for newline</span>
+      </div>
+    </div>
+  </main>
+
+  <!-- ARTIFACT PANEL -->
+  <aside id="artifact-panel" class="hidden">
+    <div class="artifact-header">
+      <div id="artifact-tabs"></div>
+      <div class="artifact-actions">
+        <button class="btn-icon" id="artifact-edit-toggle" title="Edit Code"><i data-lucide="edit-2"></i></button>
+        <button class="btn-icon" id="artifact-download-btn" title="Download"><i data-lucide="download"></i></button>
+        <button class="btn-icon" id="artifact-open-tab-btn" title="Open in new tab"><i data-lucide="external-link"></i></button>
+        <button class="btn-icon" id="artifact-copy-btn" title="Copy Code"><i data-lucide="copy"></i></button>
+        <button class="btn-icon" id="artifact-close-btn" title="Close (Ctrl+E)"><i data-lucide="panel-right-close"></i></button>
+      </div>
+    </div>
+    <div id="artifact-view-area">
+      <iframe id="artifact-iframe" sandbox="allow-scripts allow-same-origin allow-forms allow-modals" title="Artifact Preview"></iframe>
+      <div id="artifact-code-area" class="hidden"></div>
+    </div>
+    <div id="artifact-edit-area" class="hidden">
+      <textarea id="artifact-edit-textarea" spellcheck="false"></textarea>
+      <div class="artifact-edit-toolbar">
+        <button class="btn-sm btn-primary" id="artifact-rerender-btn">Re-render</button>
+        <button class="btn-sm" id="artifact-edit-cancel">Cancel</button>
+      </div>
+    </div>
+  </aside>
+
+</div><!-- #app -->
+
+<!-- DROP OVERLAY -->
+<div id="drop-overlay" class="hidden">
+  <div class="drop-message"><i data-lucide="upload-cloud"></i><span>Drop to attach</span></div>
+</div>
+
+<!-- TOAST CONTAINER -->
+<div id="toast-container" aria-live="polite" aria-atomic="true"></div>
+
+<!-- ==================== FLOATING PANELS ==================== -->
+
+<!-- Memory Panel -->
+<div id="memory-panel" class="panel hidden">
+  <div class="panel-header">
+    <h3><i data-lucide="brain"></i> Memory</h3>
+    <button class="btn-icon" id="memory-close"><i data-lucide="x"></i></button>
+  </div>
+  <div class="panel-body">
+    <p class="panel-desc">Injected into every conversation's system prompt automatically.</p>
+    <textarea id="memory-input" placeholder="Enter persistent notes… (your name, preferences, context, facts the AI should always know)"></textarea>
+    <div class="memory-actions">
+      <button class="btn-sm" id="auto-memory-btn"><i data-lucide="sparkles"></i> Auto-extract</button>
+      <button class="btn-sm btn-danger" id="memory-clear-btn"><i data-lucide="trash-2"></i></button>
+      <button class="btn-sm btn-primary" id="memory-save-btn"><i data-lucide="save"></i> Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Generation Parameters Panel -->
+<div id="params-panel" class="panel hidden">
+  <div class="panel-header">
+    <h3><i data-lucide="sliders-horizontal"></i> Parameters</h3>
+    <button class="btn-icon" id="params-close"><i data-lucide="x"></i></button>
+  </div>
+  <div class="panel-body">
+    <div class="preset-btns">
+      <button class="preset-btn" data-preset="creative">🎨 Creative</button>
+      <button class="preset-btn active" data-preset="balanced">⚖ Balanced</button>
+      <button class="preset-btn" data-preset="precise">🎯 Precise</button>
+    </div>
+    <div class="params-grid" id="params-grid"><!-- JS generated --></div>
+    <div class="params-footer">
+      <button class="btn-sm" id="params-save-preset">Save Preset</button>
+      <button class="btn-sm btn-primary" id="params-apply">Apply</button>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== MODAL OVERLAYS ==================== -->
+
+<!-- Settings Modal -->
+<div class="modal-overlay hidden" id="settings-overlay">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+    <div class="modal-header">
+      <h2 id="settings-title"><i data-lucide="settings"></i> Settings</h2>
+      <button class="btn-icon" id="settings-close"><i data-lucide="x"></i></button>
+    </div>
+    <div class="tab-nav" id="settings-tab-nav">
+      <button class="tab-btn active" data-tab="api-keys">API Keys</button>
+      <button class="tab-btn" data-tab="appearance">Appearance</button>
+      <button class="tab-btn" data-tab="behavior">Behavior</button>
+      <button class="tab-btn" data-tab="templates">Templates</button>
+      <button class="tab-btn" data-tab="export-import">Export/Import</button>
+      <button class="tab-btn" data-tab="custom-css">Custom CSS</button>
+    </div>
+    <div class="modal-body">
+
+      <!-- API Keys -->
+      <div class="tab-content active" id="tab-api-keys">
+        <div class="key-warning"><i data-lucide="shield"></i> Keys are stored in your browser only and never sent anywhere except each provider's endpoint directly.</div>
+        <div id="api-keys-list"></div>
+      </div>
+
+      <!-- Appearance -->
+      <div class="tab-content" id="tab-appearance">
+        <div class="form-group">
+          <label class="form-label">Theme</label>
+          <div class="radio-group">
+            <label><input type="radio" name="theme" value="dark"> Dark</label>
+            <label><input type="radio" name="theme" value="light"> Light</label>
+            <label><input type="radio" name="theme" value="system"> System</label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Accent Color</label>
+          <div class="color-swatches" id="color-swatches">
+            <div class="color-swatch active" data-accent="cyan" style="background:#00d4ff" title="Cyan"></div>
+            <div class="color-swatch" data-accent="amber" style="background:#f59e0b" title="Amber"></div>
+            <div class="color-swatch" data-accent="green" style="background:#10b981" title="Green"></div>
+            <div class="color-swatch" data-accent="purple" style="background:#8b5cf6" title="Purple"></div>
+            <div class="color-swatch" data-accent="pink" style="background:#ec4899" title="Pink"></div>
+            <div class="color-swatch" data-accent="red" style="background:#ef4444" title="Red"></div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Font Size</label>
+          <div class="radio-group">
+            <label><input type="radio" name="fontSize" value="small"> Small</label>
+            <label><input type="radio" name="fontSize" value="medium"> Medium</label>
+            <label><input type="radio" name="fontSize" value="large"> Large</label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Chat Bubble Style</label>
+          <div class="radio-group">
+            <label><input type="radio" name="chatStyle" value="bubbles"> Bubbles</label>
+            <label><input type="radio" name="chatStyle" value="flat"> Flat</label>
+            <label><input type="radio" name="chatStyle" value="document"> Document</label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Code Block Theme</label>
+          <select id="hljs-theme-select">
+            <option value="github-dark">GitHub Dark</option>
+            <option value="monokai">Monokai</option>
+            <option value="dracula">Dracula</option>
+            <option value="atom-one-dark">Atom One Dark</option>
+            <option value="nord">Nord</option>
+            <option value="tomorrow-night-eighties">Tomorrow Night 80s</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Behavior -->
+      <div class="tab-content" id="tab-behavior">
+        <div class="form-group">
+          <label class="form-label">Send Message Key</label>
+          <div class="radio-group">
+            <label><input type="radio" name="sendKey" value="enter"> Enter to send</label>
+            <label><input type="radio" name="sendKey" value="shift-enter"> Shift+Enter to send</label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="toggle-switch">
+            <input type="checkbox" id="auto-title-toggle">
+            Auto-generate conversation titles
+          </label>
+        </div>
+        <div class="form-group">
+          <label class="toggle-switch">
+            <input type="checkbox" id="auto-scroll-toggle">
+            Auto-scroll during streaming
+          </label>
+        </div>
+        <div class="form-group">
+          <label class="toggle-switch">
+            <input type="checkbox" id="show-tokens-toggle">
+            Show token counts per message
+          </label>
+        </div>
+        <div class="form-group">
+          <label class="toggle-switch">
+            <input type="checkbox" id="notifications-toggle">
+            Browser notifications when response completes
+          </label>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Default Provider</label>
+          <select id="default-provider-select"></select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Default System Prompt</label>
+          <textarea id="default-system-prompt" rows="3" placeholder="Applied to all new conversations…"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Max Stored Conversations</label>
+          <input type="number" id="max-conversations" value="100" min="10" max="2000" style="width:100px">
+          <p class="form-hint">Oldest conversations auto-deleted when limit exceeded.</p>
+        </div>
+      </div>
+
+      <!-- Templates -->
+      <div class="tab-content" id="tab-templates">
+        <button class="btn-sm btn-primary" id="add-template-btn" style="margin-bottom:14px">
+          <i data-lucide="plus"></i> Add Template
+        </button>
+        <div id="templates-list"></div>
+      </div>
+
+      <!-- Export / Import -->
+      <div class="tab-content" id="tab-export-import">
+        <div class="settings-section-title">Export</div>
+        <div class="form-group">
+          <button class="btn-sm" id="export-all-conv-btn"><i data-lucide="download"></i> Export All Conversations (JSON)</button>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Export Settings & Keys (AES-encrypted)</label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="password" id="export-password" placeholder="Encryption password" style="flex:1">
+            <button class="btn-sm btn-primary" id="export-settings-btn">Export</button>
+          </div>
+          <p class="form-hint">Password-encrypts your settings and API keys using AES-GCM via Web Crypto API.</p>
+        </div>
+        <div class="settings-section-title" style="margin-top:20px">Import</div>
+        <div class="form-group">
+          <button class="btn-sm" id="import-conv-btn"><i data-lucide="upload"></i> Import Conversations (JSON)</button>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Import Encrypted Settings</label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="password" id="import-password" placeholder="Decryption password" style="flex:1">
+            <button class="btn-sm" id="import-settings-btn">Import File</button>
+          </div>
+        </div>
+        <div class="settings-section-title" style="margin-top:20px">Danger Zone</div>
+        <button class="btn-sm btn-danger" id="clear-all-data-btn"><i data-lucide="trash-2"></i> Clear All Data</button>
+      </div>
+
+      <!-- Custom CSS -->
+      <div class="tab-content" id="tab-custom-css">
+        <label class="form-label">Custom CSS (injected on top of default styles)</label>
+        <textarea id="custom-css-input" rows="16" style="font-family:var(--font-mono);font-size:12px;line-height:1.6" placeholder="/* Your custom overrides */&#10;.message-bubble { border-radius: 4px; }&#10;.sidebar-header { border-bottom: 2px solid var(--accent); }"></textarea>
+        <div style="display:flex;gap:8px;margin-top:10px">
+          <button class="btn-sm btn-primary" id="apply-custom-css-btn">Apply CSS</button>
+          <button class="btn-sm" id="clear-custom-css-btn">Clear</button>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-sm" id="settings-cancel">Cancel</button>
+      <button class="btn-sm btn-primary" id="settings-save">Save Settings</button>
+    </div>
+  </div>
+</div>
+
+<!-- System Prompt Library -->
+<div class="modal-overlay hidden" id="sp-library-overlay">
+  <div class="modal" style="max-width:560px">
+    <div class="modal-header">
+      <h2><i data-lucide="library"></i> System Prompt Library</h2>
+      <button class="btn-icon" id="sp-library-close"><i data-lucide="x"></i></button>
+    </div>
+    <div class="modal-body">
+      <div style="display:flex;gap:8px;margin-bottom:14px">
+        <input type="text" id="sp-library-name" placeholder="Name for current prompt…" style="flex:1">
+        <button class="btn-sm btn-primary" id="sp-save-to-library-btn"><i data-lucide="save"></i> Save Current</button>
+      </div>
+      <div id="sp-library-list"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Keyboard Shortcuts -->
+<div class="modal-overlay hidden" id="shortcuts-overlay">
+  <div class="modal" style="max-width:600px">
+    <div class="modal-header">
+      <h2><i data-lucide="keyboard"></i> Keyboard Shortcuts</h2>
+      <button class="btn-icon" id="shortcuts-close"><i data-lucide="x"></i></button>
+    </div>
+    <div class="modal-body">
+      <div class="shortcuts-grid" id="shortcuts-grid"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Branch Visualizer -->
+<div class="modal-overlay hidden" id="branch-overlay">
+  <div class="modal" style="max-width:560px">
+    <div class="modal-header">
+      <h2><i data-lucide="git-branch"></i> Conversation Branches</h2>
+      <button class="btn-icon" id="branch-close"><i data-lucide="x"></i></button>
+    </div>
+    <div class="modal-body" id="branch-tree-container">
+      <p style="color:var(--text-muted);font-size:13px">No branches yet. Edit a user message and re-send to create a branch.</p>
+    </div>
+  </div>
+</div>
+
+<!-- Cost Estimator -->
+<div class="modal-overlay hidden" id="cost-overlay">
+  <div class="modal" style="max-width:440px">
+    <div class="modal-header">
+      <h2><i data-lucide="dollar-sign"></i> Cost Estimator</h2>
+      <button class="btn-icon" id="cost-close"><i data-lucide="x"></i></button>
+    </div>
+    <div class="modal-body" id="cost-body"></div>
+  </div>
+</div>
+
+<!-- Template Edit Modal -->
+<div class="modal-overlay hidden" id="template-edit-overlay">
+  <div class="modal" style="max-width:480px">
+    <div class="modal-header">
+      <h2 id="template-edit-title">Add Template</h2>
+      <button class="btn-icon" id="template-edit-close"><i data-lucide="x"></i></button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">Name</label>
+        <input type="text" id="template-edit-name" placeholder="e.g. Code Review">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Icon / Emoji</label>
+        <input type="text" id="template-edit-icon" placeholder="📝" style="width:70px">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Content</label>
+        <textarea id="template-edit-content" rows="6" placeholder="Template text shown when user selects it…"></textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-sm" id="template-edit-cancel">Cancel</button>
+      <button class="btn-sm btn-primary" id="template-edit-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Export Conversation Options -->
+<div class="modal-overlay hidden" id="export-conv-overlay">
+  <div class="modal" style="max-width:380px">
+    <div class="modal-header">
+      <h2><i data-lucide="download"></i> Export Conversation</h2>
+      <button class="btn-icon" id="export-conv-modal-close"><i data-lucide="x"></i></button>
+    </div>
+    <div class="modal-body" style="display:flex;flex-direction:column;gap:10px">
+      <button class="btn-sm" id="export-md-btn"><i data-lucide="file-text"></i> Export as Markdown</button>
+      <button class="btn-sm" id="export-txt-btn"><i data-lucide="file"></i> Export as Plain Text</button>
+      <button class="btn-sm" id="export-json-btn"><i data-lucide="braces"></i> Export as JSON</button>
+      <button class="btn-sm" id="export-html-share-btn"><i data-lucide="share-2"></i> Export as Shareable HTML</button>
+    </div>
+  </div>
+</div>
+
+<!-- Compare Mode Overlay (full screen) -->
+<div id="compare-overlay" class="hidden">
+  <div class="compare-header">
+    <button class="btn-icon" id="compare-close"><i data-lucide="x"></i></button>
+    <h3><i data-lucide="columns-2"></i> Compare Mode</h3>
+    <input type="text" id="compare-input" placeholder="Type a message to send to both models simultaneously…">
+    <button class="btn-sm btn-primary" id="compare-send-btn"><i data-lucide="send"></i> Send to Both</button>
+  </div>
+  <div class="compare-panels" id="compare-panels">
+    <div class="compare-panel" id="compare-left">
+      <div class="compare-panel-header">
+        <select id="compare-left-provider"></select>
+        <select id="compare-left-model"></select>
+      </div>
+      <div class="compare-messages" id="compare-left-messages"></div>
+    </div>
+    <div class="compare-panel" id="compare-right">
+      <div class="compare-panel-header">
+        <select id="compare-right-provider"></select>
+        <select id="compare-right-model"></select>
+      </div>
+      <div class="compare-messages" id="compare-right-messages"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Hidden File Inputs -->
+<input type="file" id="image-file-input" accept="image/*" multiple hidden>
+<input type="file" id="doc-file-input" accept=".pdf,.txt,.md,.csv,.json,.xml,.html,.js,.py,.ts" multiple hidden>
+<input type="file" id="import-conv-file" accept=".json" hidden>
+<input type="file" id="import-settings-file" accept=".json" hidden>
+
+<!-- CDN Libraries -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://unpkg.com/lucide@0.263.1/dist/umd/lucide.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
