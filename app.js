@@ -397,7 +397,7 @@ function getModelCtx(provider, modelId) {
   const p = PROVIDERS[provider];
   if (!p) return 4096;
   const m = p.models.find(m => m.id === modelId);
-  return m?.ctx || 4096;
+  return m?.ctx ?? 128000;
 }
 
 // ==================== MESSAGE CONTENT BUILDERS ====================
@@ -416,17 +416,18 @@ function buildOpenAIMessages(messages, systemPrompt) {
   const result = [];
   if (systemPrompt) result.push({ role: 'system', content: systemPrompt });
   for (const m of messages.filter(x => x.role !== 'system')) {
-    const textOnly = getTextContent(m);
     const hasImages = m.content.some(c => c.type === 'image');
-    if (hasImages) {
+    const hasFiles = m.content.some(c => c.type === 'file');
+    if (hasImages || hasFiles) {
       const parts = [];
       for (const c of m.content) {
         if (c.type === 'text') parts.push({ type: 'text', text: c.text });
         else if (c.type === 'image') parts.push({ type: 'image_url', image_url: { url: `data:${c.mediaType};base64,${c.data}` } });
+        else if (c.type === 'file') parts.push({ type: 'text', text: `[File: ${c.name}]\n${c.extractedText || ''}` });
       }
       result.push({ role: m.role, content: parts });
     } else {
-      result.push({ role: m.role, content: textOnly });
+      result.push({ role: m.role, content: getTextContent(m) });
     }
   }
   return result;
@@ -506,7 +507,7 @@ function downloadFile(content, filename, mimeType) {
   a.click();
   document.body.removeChild(a);
   // Revoke after a safe delay — long enough for any browser/device to initiate the download
-  setTimeout(() => URL.revokeObjectURL(url), 30000);
+  setTimeout(() => URL.revokeObjectURL(url), 250);
 }
 
 function getActiveConversation() { return STATE.conversations.find(c => c.id === STATE.activeConvId) || null; }
@@ -714,16 +715,6 @@ function forkConversation(upToMsgIndex) {
   const conv = getActiveConversation();
   if (!conv) return;
   const forked = {
-    ...conv,
-    id: uid(),
-    title: `Fork of: ${conv.title}`.slice(0, 60),
-    messages: upToMsgIndex !== undefined ? conv.messages.slice(0, upToMsgIndex + 1) : [...conv.messages],
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-    // Deep-copy all nested objects so fork and original don't share references
-    totalTokens: { input: conv.totalTokens?.input ?? 0, output: conv.totalTokens?.output ?? 0 },
-    systemPrompt: conv.systemPrompt || '',
-  };
   STATE.conversations.unshift(forked);
   STORE.saveConversations();
   loadConversation(forked.id);
@@ -924,10 +915,19 @@ function regenerate() {
   const conv = getActiveConversation();
   if (!conv || conv.messages.length < 2) return;
 
-  // Find last assistant message index
-  const lastAsstRevIdx = [...conv.messages].reverse().findIndex(m => m.role === 'assistant');
-  if (lastAsstRevIdx === -1) return;
-  const asstIdx = conv.messages.length - 1 - lastAsstRevIdx;
+  // Find the last assistant message
+  let asstIdx = -1;
+  for (let i = conv.messages.length - 1; i >= 0; i--) {
+    if (conv.messages[i].role === 'assistant') { asstIdx = i; break; }
+  }
+  if (asstIdx === -1) return;
+
+  // Find the user message immediately preceding that assistant message
+  let userIdx = -1;
+  for (let i = asstIdx - 1; i >= 0; i--) {
+    if (conv.messages[i].role === 'user') { userIdx = i; break; }
+  }
+  if (userIdx === -1) return;
 
   // Find last user message index — check BEFORE modifying anything
   const lastUserRevIdx = [...conv.messages].reverse().findIndex(m => m.role === 'user');
@@ -1016,9 +1016,6 @@ async function autoExtractMemory() {
     if (!resp.ok) throw new Error('API error ' + resp.status);
     const data = await resp.json();
     let extracted = '';
-    if (provider === 'anthropic') extracted = data.content?.[0]?.text || '';
-    else if (provider === 'gemini') extracted = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    else extracted = data.choices?.[0]?.message?.content || '';
     if (provider === 'anthropic') extracted = data.content?.[0]?.text || '';
     else if (provider === 'gemini') extracted = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
     else extracted = data.choices?.[0]?.message?.content || '';
@@ -1133,7 +1130,23 @@ function showCostEstimator() {
 }
 
 
+
 // ==================== MARKDOWN & RENDERING ====================
+function copyCodeFromHeader(btn) {
+  const code = btn.closest('.code-block-header')?.nextElementSibling?.querySelector('code');
+  if (!code) return;
+  navigator.clipboard.writeText(code.textContent);
+  btn.textContent = 'Copied!';
+  setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+}
+
+function openArtifactFromHeader(btn) {
+  const lang = btn.dataset.lang;
+  const code = btn.closest('.code-block-header')?.nextElementSibling?.querySelector('code');
+  if (!code) return;
+  UI.openArtifactPanel([{ lang, code: code.textContent, id: uid() }]);
+}
+
 function renderMarkdown(text) {
   if (!text) return '';
   try {
@@ -1153,23 +1166,13 @@ function renderMarkdown(text) {
       const header = document.createElement('div');
       header.className = 'code-block-header';
       const isArtifactLang = ARTIFACT_LANGS.includes(lang.toLowerCase());
-      header.innerHTML = `<span class="code-lang-label">${label}</span><div class="code-block-actions"><button class="code-action-btn copy-code-btn">Copy</button>${isArtifactLang ? `<button class="artifact-open-btn show-artifact-btn" data-lang="${lang}">View in Panel</button>` : ''}</div>`;
+      header.innerHTML = `<span class="code-lang-label">${label}</span><div class="code-block-actions"><button class="code-action-btn copy-code-btn" onclick="copyCodeFromHeader(this)">Copy</button>${isArtifactLang ? `<button class="artifact-open-btn show-artifact-btn" data-lang="${lang}" onclick="openArtifactFromHeader(this)">View in Panel</button>` : ''}</div>`;
       pre.parentNode.insertBefore(header, pre);
       const wrapper = document.createElement('div');
       wrapper.style.position = 'relative';
       pre.parentNode.insertBefore(wrapper, pre);
       wrapper.appendChild(header);
       wrapper.appendChild(pre);
-      // Copy handler
-      header.querySelector('.copy-code-btn')?.addEventListener('click', () => {
-        navigator.clipboard.writeText(code.textContent);
-        header.querySelector('.copy-code-btn').textContent = 'Copied!';
-        setTimeout(() => { if(header.querySelector('.copy-code-btn')) header.querySelector('.copy-code-btn').textContent = 'Copy'; }, 1500);
-      });
-      header.querySelector('.show-artifact-btn')?.addEventListener('click', () => {
-        const artifacts = [{ lang, code: code.textContent, id: uid() }];
-        UI.openArtifactPanel(artifacts);
-      });
       // Syntax highlight
       try { hljs.highlightElement(code); } catch {}
     });
@@ -1198,7 +1201,7 @@ function renderJsonTree(obj, depth = 0) {
 
 // ==================== UI ====================
 const UI = {
-  rrenderMessages(messages) {
+  renderMessages(messages) {
     const list = document.getElementById('messages-list');
     list.innerHTML = '';
     for (let i = 0; i < messages.length; i++) {
@@ -1207,27 +1210,9 @@ const UI = {
       list.appendChild(el);
     }
     lucide.createIcons({ nodes: [list] });
-
-    // Delegate action button clicks via data attributes (avoids inline JS + large string issues)
-    list.addEventListener('click', e => {
-      const btn = e.target.closest('[data-action]');
-      if (!btn) return;
-      const action = btn.dataset.action;
-      const conv = getActiveConversation();
-      if (action === 'edit') {
-        UI.editMessage(parseInt(btn.dataset.idx, 10));
-      } else if (action === 'copy') {
-        const m = conv?.messages.find(x => x.id === btn.dataset.msgId);
-        if (m) copyText(getTextContent(m));
-      } else if (action === 'fork') {
-        forkConversation(parseInt(btn.dataset.idx, 10));
-      } else if (action === 'regenerate') {
-        regenerate();
-      } else if (action === 'open-artifacts') {
-        const m = conv?.messages.find(x => x.id === btn.dataset.msgId);
-        if (m?.artifacts?.length) UI.openArtifactPanel(m.artifacts);
-      }
-    }, { once: false });
+    // Re-apply active in-conversation search highlights after re-render
+    const activeQuery = document.getElementById('conv-search-input')?.value;
+    if (activeQuery) setTimeout(() => convSearch(activeQuery), 0);
   },
 
   createMessageElement(msg, idx, allMsgs) {
@@ -1304,12 +1289,6 @@ const UI = {
         ${isLastAsst ? `<button class="msg-action-btn" data-action="regenerate"><i data-lucide="refresh-cw"></i> Regenerate</button>` : ''}
         ${msg.artifacts?.length ? `<button class="msg-action-btn" data-action="open-artifacts" data-msg-id="${escapeHtml(msgId)}"><i data-lucide="panel-right"></i> Artifacts</button>` : ''}
       </div>`;
-    } else {
-      actionsHTML = `<div class="message-actions">
-        <button class="msg-action-btn" onclick="copyText(${JSON.stringify(getTextContent(msg))})"><i data-lucide="copy"></i> Copy</button>
-        ${isLastAsst ? `<button class="msg-action-btn" onclick="regenerate()"><i data-lucide="refresh-cw"></i> Regenerate</button>` : ''}
-        ${msg.artifacts?.length ? `<button class="msg-action-btn" onclick="UI.openArtifactPanel(${JSON.stringify(msg.artifacts).replace(/"/g,'&quot;')})"><i data-lucide="panel-right"></i> Artifacts</button>` : ''}
-      </div>`;
     }
 
     el.innerHTML = `
@@ -1382,7 +1361,7 @@ const UI = {
       document.getElementById('textarea-wrapper').appendChild(cancelBtn);
     }
     toast('Editing message — send to replace from this point.', 'info');
-  },,
+  },
 
   showEmptyState(show) {
     document.getElementById('empty-state').style.display = show ? 'flex' : 'none';
@@ -1977,6 +1956,7 @@ function restoreBranch(branchIdx) {
 function openCompareMode() {
   const comp = document.getElementById('compare-overlay');
   comp.classList.remove('hidden');
+  ['left', 'right'].forEach(s => { document.getElementById(`compare-${s}-messages`).innerHTML = ''; });
   const sides = ['left', 'right'];
   const providerKeys = Object.keys(PROVIDERS);
   sides.forEach((side, si) => {
@@ -2041,6 +2021,7 @@ function buildParamsGrid() {
   thinkDiv.querySelector('#ps-extended-thinking').addEventListener('change', e => {
     STATE.params.extended_thinking = e.target.checked;
     document.getElementById('thinking-budget-wrap').style.display = e.target.checked ? 'block' : 'none';
+    STORE.saveParams();
   });
   thinkDiv.querySelector('#ps-thinking-budget')?.addEventListener('input', e => {
     STATE.params.thinking_budget = parseInt(e.target.value);
@@ -2052,7 +2033,7 @@ function buildParamsGrid() {
   const jsonDiv = document.createElement('div');
   jsonDiv.className = 'params-group';
   jsonDiv.innerHTML = `<label class="toggle-switch"><input type="checkbox" id="ps-json-mode" ${STATE.params.json_mode ? 'checked':''}> JSON Mode (force JSON output)</label>`;
-  jsonDiv.querySelector('input').addEventListener('change', e => { STATE.params.json_mode = e.target.checked; });
+  jsonDiv.querySelector('input').addEventListener('change', e => { STATE.params.json_mode = e.target.checked; STORE.saveParams(); });
   grid.appendChild(jsonDiv);
 }
 
@@ -2289,6 +2270,28 @@ function init() {
   registerSW();
 
   // ===== EVENT LISTENERS =====
+
+  // Sidebar toggle
+  // Message action delegation — registered once here, not on every re-render
+  document.getElementById('messages-list').addEventListener('click', e => {
+    const btn = e.target.closest('[data-action]');
+    if (!btn) return;
+    const action = btn.dataset.action;
+    const conv = getActiveConversation();
+    if (action === 'edit') {
+      UI.editMessage(parseInt(btn.dataset.idx, 10));
+    } else if (action === 'copy') {
+      const m = conv?.messages.find(x => x.id === btn.dataset.msgId);
+      if (m) copyText(getTextContent(m));
+    } else if (action === 'fork') {
+      forkConversation(parseInt(btn.dataset.idx, 10));
+    } else if (action === 'regenerate') {
+      regenerate();
+    } else if (action === 'open-artifacts') {
+      const m = conv?.messages.find(x => x.id === btn.dataset.msgId);
+      if (m?.artifacts?.length) UI.openArtifactPanel(m.artifacts);
+    }
+  });
 
   // Sidebar toggle
   document.getElementById('sidebar-toggle').addEventListener('click', () => {
