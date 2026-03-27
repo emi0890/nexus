@@ -1229,7 +1229,7 @@ const UI = {
       actionsHTML = `<div class="message-actions">
         <button class="msg-action-btn" onclick="copyText(${JSON.stringify(getTextContent(msg))})"><i data-lucide="copy"></i> Copy</button>
         ${isLastAsst ? `<button class="msg-action-btn" onclick="regenerate()"><i data-lucide="refresh-cw"></i> Regenerate</button>` : ''}
-        ${msg.artifacts?.length ? `<button class="msg-action-btn" onclick="UI.openArtifactPanel(${JSON.stringify(msg.artifacts).replace(/"/g,'&quot;')})"><i data-lucide="layout-panel-right"></i> Artifacts</button>` : ''}
+        ${msg.artifacts?.length ? `<button class="msg-action-btn" onclick="UI.openArtifactPanel(${JSON.stringify(msg.artifacts).replace(/"/g,'&quot;')})"><i data-lucide="panel-right"></i> Artifacts</button>` : ''}
       </div>`;
     }
 
