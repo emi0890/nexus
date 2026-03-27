@@ -2183,11 +2183,23 @@ function init() {
     STATE.settings.currentModel = document.getElementById('model-select').value;
   });
   document.getElementById('model-select').addEventListener('change', e => {
+  const isCustom = e.target.value === 'custom';
+  const customInput = document.getElementById('custom-model-input');
+  customInput.classList.toggle('hidden', !isCustom);
+  if (!isCustom) {
     UI.updateModelBadge(provSel.value, e.target.value);
     STATE.settings.currentModel = e.target.value;
     const conv = getActiveConversation();
     if (conv) { conv.model = e.target.value; STORE.saveConversations(); }
     UI.updateTokenBudget();
+  }
+});
+
+document.getElementById('custom-model-input').addEventListener('input', e => {
+  STATE.settings.currentModel = e.target.value;
+  const conv = getActiveConversation();
+  if (conv) { conv.model = e.target.value; STORE.saveConversations(); }
+});
   });
 
   // System prompt toggle
