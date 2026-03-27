@@ -1,5 +1,5 @@
 // NexusAI Service Worker — Cache-first for app shell, network-first for API calls
-const CACHE_NAME = 'nexusai-v1';
+const CACHE_NAME = 'nexusai-v2';
 const APP_SHELL = [
   './index.html',
   './app.js',
@@ -21,19 +21,18 @@ self.addEventListener('activate', event => {
 });
 
 self.addEventListener('fetch', event => {
-  // Never intercept API calls
   const url = new URL(event.request.url);
-  if (url.origin !== location.origin) return;
+  if (url.origin !== location.origin || event.request.method !== 'GET') return;
 
+  // Stale-while-revalidate: serve cache instantly, update cache in background
   event.respondWith(
-    caches.match(event.request).then(cached => {
-      if (cached) return cached;
-      return fetch(event.request).then(response => {
-        if (response.ok && event.request.method === 'GET') {
-          const clone = response.clone();
-          caches.open(CACHE_NAME).then(c => c.put(event.request, clone));
-        }
-        return response;
+    caches.open(CACHE_NAME).then(cache => {
+      return cache.match(event.request).then(cached => {
+        const networkFetch = fetch(event.request).then(response => {
+          if (response.ok) cache.put(event.request, response.clone());
+          return response;
+        }).catch(() => cached);
+        return cached || networkFetch;
       });
     })
   );
