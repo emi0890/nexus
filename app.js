@@ -2182,18 +2182,20 @@ function init() {
     if (conv) { conv.provider = e.target.value; conv.model = document.getElementById('model-select').value; STORE.saveConversations(); }
     STATE.settings.currentModel = document.getElementById('model-select').value;
   });
-  document.getElementById('model-select').addEventListener('change', e => {
-  const isCustom = e.target.value === 'custom';
-  const customInput = document.getElementById('custom-model-input');
-  customInput.classList.toggle('hidden', !isCustom);
-  if (!isCustom) {
+ document.getElementById('model-select').addEventListener('change', e => {
+    document.getElementById('custom-model-input').classList.toggle('hidden', e.target.value !== 'custom');
     UI.updateModelBadge(provSel.value, e.target.value);
     STATE.settings.currentModel = e.target.value;
     const conv = getActiveConversation();
     if (conv) { conv.model = e.target.value; STORE.saveConversations(); }
     UI.updateTokenBudget();
-  }
-});
+  });
+
+  document.getElementById('custom-model-input').addEventListener('input', e => {
+    STATE.settings.currentModel = e.target.value;
+    const conv = getActiveConversation();
+    if (conv) { conv.model = e.target.value; STORE.saveConversations(); }
+  });
 
 document.getElementById('custom-model-input').addEventListener('input', e => {
   STATE.settings.currentModel = e.target.value;
