@@ -2197,13 +2197,6 @@ function init() {
     if (conv) { conv.model = e.target.value; STORE.saveConversations(); }
   });
 
-document.getElementById('custom-model-input').addEventListener('input', e => {
-  STATE.settings.currentModel = e.target.value;
-  const conv = getActiveConversation();
-  if (conv) { conv.model = e.target.value; STORE.saveConversations(); }
-});
-  });
-
   // System prompt toggle
   const spBar = document.getElementById('system-prompt-bar');
   document.getElementById('sp-toggle-btn').addEventListener('click', () => {
