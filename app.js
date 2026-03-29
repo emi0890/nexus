@@ -729,6 +729,16 @@ function forkConversation(upToMsgIndex) {
   const conv = getActiveConversation();
   if (!conv) return;
   const forked = {
+    id: uid(),
+    title: conv.title + ' (fork)',
+    provider: conv.provider,
+    model: conv.model,
+    systemPrompt: conv.systemPrompt,
+    messages: upToMsgIndex !== undefined ? conv.messages.slice(0, upToMsgIndex + 1) : [...conv.messages],
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    totalTokens: { input: 0, output: 0 },
+  };
   STATE.conversations.unshift(forked);
   STORE.saveConversations();
   loadConversation(forked.id);
@@ -925,7 +935,7 @@ function stopStreaming() {
   if (STATE.streamController) STATE.streamController.abort();
 }
 
-function regenerate() {
+ffunction regenerate() {
   const conv = getActiveConversation();
   if (!conv || conv.messages.length < 2) return;
 
@@ -943,21 +953,14 @@ function regenerate() {
   }
   if (userIdx === -1) return;
 
-  // Find last user message index — check BEFORE modifying anything
-  const lastUserRevIdx = [...conv.messages].reverse().findIndex(m => m.role === 'user');
-  if (lastUserRevIdx === -1) return; // no user message to regenerate from
-  const userIdx = conv.messages.length - 1 - lastUserRevIdx;
-
-  // Capture user message content before splicing
+  // Capture content before modifying the array
   const lastUserMsg = conv.messages[userIdx];
   const text = getTextContent(lastUserMsg);
   const attachments = lastUserMsg.content.filter(c => c.type !== 'text');
 
-  // Now safely remove both messages (remove higher index first to preserve lower index)
-  const higherIdx = Math.max(asstIdx, userIdx);
-  const lowerIdx = Math.min(asstIdx, userIdx);
-  conv.messages.splice(higherIdx, 1);
-  conv.messages.splice(lowerIdx, 1);
+  // Remove assistant first (higher index), then user
+  conv.messages.splice(asstIdx, 1);
+  conv.messages.splice(userIdx, 1);
 
   STORE.saveConversations();
   sendMessage({ text, attachments });
