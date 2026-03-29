@@ -578,8 +578,22 @@ function createConversation(opts = {}) {
 
 function enforceMaxConversations() {
   const max = parseInt(STATE.settings.maxConversations) || 100;
-  if (STATE.conversations.length > max) {
-    STATE.conversations = STATE.conversations.slice(0, max);
+  if (STATE.conversations.length <= max) return;
+
+  const removed = STATE.conversations.slice(max);
+  STATE.conversations = STATE.conversations.slice(0, max);
+
+  // If the active conversation was sliced off, switch to the newest remaining one
+  const activeWasRemoved = removed.some(c => c.id === STATE.activeConvId);
+  if (activeWasRemoved) {
+    if (STATE.conversations.length > 0) {
+      loadConversation(STATE.conversations[0].id);
+    } else {
+      STATE.activeConvId = null;
+      UI.renderMessages([]);
+      UI.showEmptyState(true);
+    }
+    toast('Oldest conversation removed to stay within the limit.', 'warning');
   }
 }
 
