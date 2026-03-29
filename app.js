@@ -106,10 +106,12 @@ const PROVIDERS = {
             if (parsed.delta?.type === 'text_delta') results.push({ delta: parsed.delta.text, done: false, type: 'text' });
             else if (parsed.delta?.type === 'thinking_delta') results.push({ delta: parsed.delta.thinking, done: false, type: 'thinking' });
           } else if (parsed.type === 'message_stop') {
-            results.push({ delta: '', done: true });
-          } else if (parsed.type === 'message_delta' && parsed.usage) {
-            results.push({ usage: parsed.usage, done: false });
-          }
+        results.push({ delta: '', done: true });
+      } else if (parsed.type === 'message_start' && parsed.message?.usage) {
+        results.push({ usage: { input_tokens: parsed.message.usage.input_tokens, output_tokens: 0 }, done: false });
+      } else if (parsed.type === 'message_delta' && parsed.usage) {
+        results.push({ usage: { input_tokens: 0, output_tokens: parsed.usage.output_tokens }, done: false });
+      }
         } catch {}
       }
       return results;
@@ -1010,10 +1012,13 @@ async function autoExtractMemory() {
   const transcript = conv.messages.filter(m => m.role !== 'system').map(m => `${m.role.toUpperCase()}: ${getTextContent(m)}`).join('\n').slice(0, 6000);
   const extractPrompt = `From this conversation, extract brief key facts, preferences, and important info about the user that should be remembered for future conversations. Be concise. Bullet points only.\n\n${transcript}`;
   try {
+    const savedModel = STATE.settings.currentModel;
+    STATE.settings.currentModel = conv.model;
     const builtBody = PROVIDERS[provider].buildRequest(
       [{ id: uid(), role: 'user', content: [{ type: 'text', text: extractPrompt }], provider, timestamp: Date.now(), tokens: {}, artifacts: [] }],
       { max_tokens: 400, temperature: 0.3 }, null
     );
+    STATE.settings.currentModel = savedModel;
 
     let fetchURL, fetchBody;
     if (provider === 'gemini') {
@@ -1090,8 +1095,11 @@ async function runCompareMode() {
         const { done, value } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
-        const results = PROVIDERS[prov].parseStreamChunk(buffer);
-        buffer = '';
+        const lastNewline = buffer.lastIndexOf('\n');
+        if (lastNewline === -1) continue;
+        const chunk = buffer.slice(0, lastNewline + 1);
+        buffer = buffer.slice(lastNewline + 1);
+        const results = PROVIDERS[prov].parseStreamChunk(chunk);
         for (const r of results) { if (r.delta && r.type !== 'thinking') full += r.delta; }
         asstBubble.textContent = full || '…';
         msgDiv.scrollTop = msgDiv.scrollHeight;
@@ -1421,12 +1429,12 @@ const UI = {
     const p = PROVIDERS[provider];
     if (!p) return;
     sel.innerHTML = p.models.map(m => `<option value="${m.id}">${m.label}</option>`).join('');
-    // Custom model option for openrouter/ollama
-    if (['openrouter','ollama'].includes(provider)) {
-      const customInput = document.getElementById('custom-model-input');
-      if (customInput) customInput.classList.toggle('hidden', sel.value !== 'custom');
-    }
     sel.value = STATE.settings.currentModel || p.models[0]?.id;
+    const customInput = document.getElementById('custom-model-input');
+    if (customInput) {
+      const supportsCustom = ['openrouter', 'ollama'].includes(provider);
+      customInput.classList.toggle('hidden', !supportsCustom || sel.value !== 'custom');
+    }
     this.updateModelBadge(provider, sel.value);
   },
 
